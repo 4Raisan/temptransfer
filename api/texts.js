@@ -34,8 +34,7 @@ const MAX_BODY_SIZE = 64 * 1024; // 64KB max request body
 const MAX_TEXT_LENGTH = 10000; // 10,000 chars max per text
 const MAX_TEXTS = 200; // Max texts in community board
 
-let memoryTexts = [];
-let lastEtag = null;
+let memoryFallback = [];
 
 function purgeExpired(list) {
   const now = Date.now();
@@ -59,28 +58,17 @@ async function streamToString(readableStream) {
 async function loadCommunityTexts() {
   if (getBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      const options = {
+      const res = await getBlob(BLOB_FILENAME, {
         access: 'public',
-        headers: { 'Cache-Control': 'no-cache' }
-      };
-      if (lastEtag) {
-        options.ifNoneMatch = lastEtag;
-      }
-
-      const res = await getBlob(BLOB_FILENAME, options);
-      if (res) {
-        if (res.statusCode === 304) {
-          return { texts: purgeExpired(memoryTexts), hadExpired: false };
-        }
-        if (res.statusCode === 200 && res.stream) {
-          lastEtag = res.blob?.etag || null;
-          const contentStr = await streamToString(res.stream);
-          const remoteList = JSON.parse(contentStr || '[]');
-          if (Array.isArray(remoteList)) {
-            const valid = purgeExpired(remoteList);
-            memoryTexts = valid;
-            return { texts: valid, hadExpired: valid.length < remoteList.length };
-          }
+        headers: { 'Cache-Control': 'no-cache, no-store' }
+      });
+      if (res && res.statusCode === 200 && res.stream) {
+        const contentStr = await streamToString(res.stream);
+        const remoteList = JSON.parse(contentStr || '[]');
+        if (Array.isArray(remoteList)) {
+          const valid = purgeExpired(remoteList);
+          memoryFallback = valid;
+          return { texts: valid, hadExpired: valid.length < remoteList.length };
         }
       }
     } catch (e) {
@@ -88,13 +76,13 @@ async function loadCommunityTexts() {
     }
   }
 
-  const valid = purgeExpired(memoryTexts);
+  const valid = purgeExpired(memoryFallback);
   return { texts: valid, hadExpired: false };
 }
 
 async function saveCommunityTexts(newList) {
   const valid = purgeExpired(newList);
-  memoryTexts = valid;
+  memoryFallback = valid;
 
   if (putBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
@@ -104,7 +92,6 @@ async function saveCommunityTexts(newList) {
         allowOverwrite: true,
         cacheControlMaxAge: 0
       });
-      lastEtag = null; // Invalidate cached ETag on write
     } catch (e) {
       console.error('Failed to sync to Vercel Blob:', e.message);
     }

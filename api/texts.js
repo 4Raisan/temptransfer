@@ -35,6 +35,7 @@ const MAX_TEXT_LENGTH = 10000; // 10,000 chars max per text
 const MAX_TEXTS = 200; // Max texts in community board
 
 let memoryTexts = [];
+let cachedBlobUrl = null;
 
 function purgeExpired(list) {
   const now = Date.now();
@@ -45,13 +46,24 @@ function purgeExpired(list) {
 }
 
 async function loadCommunityTexts() {
-  if (listBlob && process.env.BLOB_READ_WRITE_TOKEN) {
+  if (process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      const { blobs } = await listBlob({ prefix: BLOB_FILENAME, limit: 1 });
-      const targetBlob = blobs.find(b => b.pathname === BLOB_FILENAME);
-      if (targetBlob) {
-        const fetchUrl = (targetBlob.downloadUrl || targetBlob.url) + '?_t=' + Date.now();
-        const res = await fetch(fetchUrl, {
+      let targetUrl = cachedBlobUrl;
+
+      // If URL not cached yet in this container instance, discover it via listBlob
+      if (!targetUrl && listBlob) {
+        const { blobs } = await listBlob({ prefix: BLOB_FILENAME, limit: 1 });
+        const targetBlob = blobs.find(b => b.pathname === BLOB_FILENAME);
+        if (targetBlob) {
+          const rawUrl = targetBlob.url || targetBlob.downloadUrl;
+          cachedBlobUrl = rawUrl ? rawUrl.split('?')[0] : null;
+          targetUrl = cachedBlobUrl;
+        }
+      }
+
+      if (targetUrl) {
+        const cleanUrl = targetUrl.split('?')[0];
+        const res = await fetch(cleanUrl + '?_t=' + Date.now(), {
           cache: 'no-store',
           headers: { 'Cache-Control': 'no-cache, no-store' }
         });
@@ -65,7 +77,7 @@ async function loadCommunityTexts() {
         }
       }
     } catch (e) {
-      console.warn('Blob list error:', e.message);
+      console.warn('Blob list/fetch error:', e.message);
     }
   }
 
@@ -79,11 +91,14 @@ async function saveCommunityTexts(newList) {
 
   if (putBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
+      const b = await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
         access: 'public',
         addRandomSuffix: false,
         allowOverwrite: true
       });
+      if (b && (b.url || b.downloadUrl)) {
+        cachedBlobUrl = (b.url || b.downloadUrl).split('?')[0];
+      }
     } catch (e) {
       console.error('Failed to sync to Vercel Blob:', e.message);
     }
@@ -96,19 +111,27 @@ function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
     let size = 0;
+    let exceeded = false;
 
     req.on('data', chunk => {
+      if (exceeded) return;
       size += chunk.length;
       if (size > MAX_BODY_SIZE) {
-        req.destroy();
-        reject(new Error('BODY_TOO_LARGE'));
+        exceeded = true;
         return;
       }
       body += chunk;
     });
 
-    req.on('error', err => reject(err));
+    req.on('error', err => {
+      if (!exceeded) reject(err);
+    });
+
     req.on('end', () => {
+      if (exceeded) {
+        reject(new Error('BODY_TOO_LARGE'));
+        return;
+      }
       try {
         resolve(JSON.parse(body || '{}'));
       } catch (e) {
@@ -190,8 +213,8 @@ module.exports = async (req, res) => {
 
       const { texts: currentList } = await loadCommunityTexts();
 
-      // Duplicate detection
-      const isDuplicate = currentList.some(item => item.text === newItem.text && (now - item.createdAt) < 5000);
+      // Duplicate detection (within 10 seconds)
+      const isDuplicate = currentList.some(item => item.text === newItem.text && (now - item.createdAt) < 10000);
       if (isDuplicate) {
         res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: 'Duplicate text detected', duplicate: true, texts: currentList }));

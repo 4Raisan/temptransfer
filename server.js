@@ -1,4 +1,4 @@
-// Temp-Transfer - Local Development Server
+// Temp-Transfer - Local & Production Server
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -19,22 +19,26 @@ const MIME_TYPES = {
 };
 
 function handler(req, res) {
-  if (req.url && req.url.includes('debug=1')) {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ url: req.url, headers: req.headers }));
-    return;
+  const urlObj = new URL(req.url, 'http://localhost');
+  const pathParam = urlObj.searchParams.get('path');
+  
+  // Resolve actual request path from query param or pathname
+  let reqPath = '/';
+  if (pathParam !== null && pathParam !== undefined) {
+    reqPath = '/' + pathParam;
+  } else {
+    reqPath = urlObj.pathname;
   }
+  
+  reqPath = reqPath.replace(/\/+/g, '/');
 
-  const originalUrl = req.headers['x-forwarded-uri'] || req.headers['x-matched-path'] || req.url || '/';
-  const urlObj = new URL(originalUrl, 'http://localhost');
-  const reqUrl = urlObj.pathname;
-
-  // Delegate API to api/texts.js
-  if (reqUrl.startsWith('/api') || (req.url && req.url.startsWith('/api')) || originalUrl.includes('/api/texts')) {
+  // Check if API route
+  if (reqPath === '/api/texts' || reqPath.startsWith('/api/texts')) {
     return apiTextsHandler(req, res);
   }
 
-  let filePathName = reqUrl;
+  // Otherwise serve static files from public/
+  let filePathName = reqPath;
   if (filePathName === '/' || filePathName === '') {
     filePathName = '/index.html';
   }

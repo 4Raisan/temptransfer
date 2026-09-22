@@ -22,13 +22,18 @@ if (fs.existsSync(path.join(process.cwd(), '.env.local'))) {
 
 let putBlob = null;
 let getBlob = null;
+let listBlob = null;
+let delBlob = null;
 try {
   const blobModule = require('@vercel/blob');
   putBlob = blobModule.put;
   getBlob = blobModule.get;
+  listBlob = blobModule.list;
+  delBlob = blobModule.del;
 } catch (e) {}
 
 const BLOB_FILENAME = 'community_texts.json';
+const FEED_PREFIX = 'feed/data_';
 const EXPIRATION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_BODY_SIZE = 64 * 1024; // 64KB max request body
 const MAX_TEXT_LENGTH = 10000; // 10,000 chars max per text
@@ -56,23 +61,48 @@ async function streamToString(readableStream) {
 }
 
 async function loadCommunityTexts() {
-  if (getBlob && process.env.BLOB_READ_WRITE_TOKEN) {
-    try {
-      const res = await getBlob(BLOB_FILENAME, {
-        access: 'public',
-        headers: { 'Cache-Control': 'no-cache, no-store' }
-      });
-      if (res && res.statusCode === 200 && res.stream) {
-        const contentStr = await streamToString(res.stream);
-        const remoteList = JSON.parse(contentStr || '[]');
-        if (Array.isArray(remoteList)) {
-          const valid = purgeExpired(remoteList);
-          memoryFallback = valid;
-          return { texts: valid, hadExpired: valid.length < remoteList.length };
+  if (process.env.BLOB_READ_WRITE_TOKEN) {
+    // 1. Try loading latest versioned immutable feed file (100% immune to CDN caching)
+    if (listBlob) {
+      try {
+        const { blobs } = await listBlob({ prefix: FEED_PREFIX, limit: 6 });
+        if (blobs && blobs.length > 0) {
+          blobs.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+          const latest = blobs[0];
+          const res = await fetch(latest.url, { cache: 'no-store' });
+          if (res.ok) {
+            const list = await res.json();
+            if (Array.isArray(list)) {
+              const valid = purgeExpired(list);
+              memoryFallback = valid;
+              return { texts: valid, hadExpired: valid.length < list.length };
+            }
+          }
         }
+      } catch (e) {
+        console.warn('Versioned feed load error:', e.message);
       }
-    } catch (e) {
-      console.warn('Blob get error:', e.message);
+    }
+
+    // 2. Fallback to direct getBlob if no versioned files yet
+    if (getBlob) {
+      try {
+        const res = await getBlob(BLOB_FILENAME, {
+          access: 'public',
+          headers: { 'Cache-Control': 'no-cache, no-store' }
+        });
+        if (res && res.statusCode === 200 && res.stream) {
+          const contentStr = await streamToString(res.stream);
+          const remoteList = JSON.parse(contentStr || '[]');
+          if (Array.isArray(remoteList)) {
+            const valid = purgeExpired(remoteList);
+            memoryFallback = valid;
+            return { texts: valid, hadExpired: valid.length < remoteList.length };
+          }
+        }
+      } catch (e) {
+        console.warn('Fallback getBlob error:', e.message);
+      }
     }
   }
 
@@ -86,12 +116,31 @@ async function saveCommunityTexts(newList) {
 
   if (putBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
+      // Write new unique version file (guaranteed zero CDN cache lag)
+      const versionFile = `${FEED_PREFIX}${Date.now()}_${crypto.randomBytes(3).toString('hex')}.json`;
+      await putBlob(versionFile, JSON.stringify(valid), {
+        access: 'public',
+        addRandomSuffix: false
+      });
+
+      // Mirror to legacy community_texts.json in background
+      putBlob(BLOB_FILENAME, JSON.stringify(valid), {
         access: 'public',
         addRandomSuffix: false,
         allowOverwrite: true,
         cacheControlMaxAge: 0
-      });
+      }).catch(() => {});
+
+      // Prune old version files in background (keep latest 3)
+      if (delBlob && listBlob) {
+        listBlob({ prefix: FEED_PREFIX, limit: 15 }).then(({ blobs }) => {
+          if (blobs && blobs.length > 3) {
+            blobs.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+            const stale = blobs.slice(3);
+            delBlob(stale.map(b => b.url)).catch(() => {});
+          }
+        }).catch(() => {});
+      }
     } catch (e) {
       console.error('Failed to sync to Vercel Blob:', e.message);
     }

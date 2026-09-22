@@ -1,5 +1,7 @@
 {
+  "cleanUrls": true,
   "rewrites": [
-    { "source": "/(.*)", "destination": "/server.js" }
+    { "source": "/api/texts", "destination": "/api/texts.js" },
+    { "source": "/(.*)", "destination": "/public/$1" }
   ]
 }

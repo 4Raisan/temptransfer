@@ -19,11 +19,12 @@ const MIME_TYPES = {
 };
 
 function handler(req, res) {
-  const urlObj = new URL(req.url, 'http://localhost');
+  const originalUrl = req.headers['x-forwarded-uri'] || req.headers['x-matched-path'] || req.url || '/';
+  const urlObj = new URL(originalUrl, 'http://localhost');
   const reqUrl = urlObj.pathname;
 
   // Delegate API to api/texts.js
-  if (reqUrl === '/api/texts') {
+  if (reqUrl.startsWith('/api') || (req.url && req.url.startsWith('/api')) || originalUrl.includes('/api/texts')) {
     return apiTextsHandler(req, res);
   }
 

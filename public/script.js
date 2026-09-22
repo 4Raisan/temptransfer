@@ -37,6 +37,11 @@
   let pollIntervalId = null;
   let clockOffset = 0; // serverTime - clientTime offset
 
+  // Sequential upload queue to handle rapid fast pasting without race conditions
+  const uploadQueue = [];
+  let isProcessingQueue = false;
+  const pendingOptimisticItems = new Map(); // tempId -> item
+
   // --- Local Cache Helpers ---
   function getCachedTexts() {
     try {
@@ -63,10 +68,39 @@
     });
   }
 
+  // Merges server-authoritative texts with any still-pending optimistic items
+  function mergeServerTexts(serverTexts) {
+    const valid = purgeExpired(serverTexts || []);
+
+    // Check if any of our pending optimistic items have now been confirmed on the server
+    for (const [tempId, pendingItem] of pendingOptimisticItems.entries()) {
+      const match = valid.find(s => s.text === pendingItem.text && Math.abs(s.createdAt - pendingItem.createdAt) < 60000);
+      if (match) {
+        pendingOptimisticItems.delete(tempId);
+      }
+    }
+
+    // Build unified list: unconfirmed pending items first, then server items
+    const stillPending = Array.from(pendingOptimisticItems.values());
+    const combined = [...stillPending];
+    for (const item of valid) {
+      if (!combined.some(c => c.id === item.id)) {
+        combined.push(item);
+      }
+    }
+
+    const hasChanged = JSON.stringify(combined) !== JSON.stringify(communityTexts);
+    if (hasChanged) {
+      communityTexts = combined;
+      setCachedTexts(communityTexts);
+      renderTexts();
+    }
+  }
+
   // --- Community API Sync ---
 
   async function fetchCommunityTexts(silent = true) {
-    if (isFetching || isWriting) return; // Don't poll while a write is in flight
+    if (isFetching || isProcessingQueue) return; // Don't poll while uploads are in flight
     isFetching = true;
     try {
       const res = await fetch(`/api/texts?_t=${Date.now()}`, {
@@ -76,20 +110,10 @@
       if (res.ok) {
         const data = await res.json();
         if (data && Array.isArray(data.texts)) {
-          // Sync clock offset
           if (data.serverTime) {
             clockOffset = data.serverTime - Date.now();
           }
-
-          const freshTexts = purgeExpired(data.texts);
-
-          // Check if data actually changed before re-rendering
-          const hasChanged = JSON.stringify(freshTexts) !== JSON.stringify(communityTexts);
-          if (hasChanged) {
-            communityTexts = freshTexts;
-            setCachedTexts(freshTexts);
-            renderTexts();
-          }
+          mergeServerTexts(data.texts);
         }
       }
     } catch (err) {
@@ -99,76 +123,101 @@
     }
   }
 
-  async function postNewText(content) {
+  function queueNewText(content) {
     const now = Date.now();
-    const tempId = 'temp_' + now;
+    const tempId = 'temp_' + now + '_' + Math.random().toString(36).slice(2, 6);
     const optimisticItem = {
       id: tempId,
       text: content,
       createdAt: now,
-      expiresAt: now + EXPIRATION_MS
+      expiresAt: now + EXPIRATION_MS,
+      isPending: true
     };
 
-    // Optimistic UI update
+    // Add to optimistic map and UI immediately
+    pendingOptimisticItems.set(tempId, optimisticItem);
     communityTexts.unshift(optimisticItem);
     renderTexts();
     showToast('Adding to community...', 'success');
 
-    isWriting = true; // Pause polling while writing
-    try {
-      const res = await fetch('/api/texts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: content })
-      });
+    // Enqueue task for sequential upload
+    uploadQueue.push({ tempId, content });
+    processUploadQueue();
+  }
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.texts) {
-          communityTexts = purgeExpired(data.texts);
-          setCachedTexts(communityTexts);
+  async function processUploadQueue() {
+    if (isProcessingQueue) return;
+    isProcessingQueue = true;
+    isWriting = true;
+
+    while (uploadQueue.length > 0) {
+      const task = uploadQueue[0];
+      try {
+        const res = await fetch('/api/texts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: task.content })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          pendingOptimisticItems.delete(task.tempId);
+          uploadQueue.shift();
+
+          if (data && Array.isArray(data.texts)) {
+            mergeServerTexts(data.texts);
+            showToast('Added! Visible to everyone across devices', 'success');
+          }
+        } else if (res.status === 409) {
+          pendingOptimisticItems.delete(task.tempId);
+          uploadQueue.shift();
+          showToast('Duplicate text — already added', 'warning');
+          const data = await res.json().catch(() => ({}));
+          if (data && Array.isArray(data.texts)) {
+            mergeServerTexts(data.texts);
+          }
+        } else if (res.status === 413) {
+          pendingOptimisticItems.delete(task.tempId);
+          uploadQueue.shift();
+          showToast('Text too large to save', 'danger');
+          communityTexts = communityTexts.filter(t => t.id !== task.tempId);
           renderTexts();
-          showToast('Added! Visible to everyone across devices', 'success');
-          return;
-        }
-      }
-
-      if (res.status === 409) {
-        const data = await res.json();
-        showToast('Duplicate text — already exists', 'warning');
-        if (data.texts) {
-          communityTexts = purgeExpired(data.texts);
-          setCachedTexts(communityTexts);
+        } else {
+          pendingOptimisticItems.delete(task.tempId);
+          uploadQueue.shift();
+          const errData = await res.json().catch(() => ({}));
+          showToast(errData.error || 'Failed to add text', 'danger');
+          communityTexts = communityTexts.filter(t => t.id !== task.tempId);
           renderTexts();
         }
-        return;
+      } catch (e) {
+        showToast('Saved locally, will sync when reconnected', 'warning');
+        pendingOptimisticItems.delete(task.tempId);
+        uploadQueue.shift();
       }
-
-      if (res.status === 413) {
-        showToast('Text too large to save', 'danger');
-        // Remove optimistic item
-        communityTexts = communityTexts.filter(t => t.id !== tempId);
-        renderTexts();
-        return;
-      }
-
-      throw new Error('Server returned error');
-    } catch (e) {
-      // Keep optimistic item in local cache even if server momentarily hiccups
-      setCachedTexts(communityTexts);
-      showToast('Saved locally, will sync when reconnected', 'warning');
-    } finally {
-      isWriting = false;
     }
+
+    isWriting = false;
+    isProcessingQueue = false;
   }
 
   async function deleteTextItem(id) {
-    // Optimistic remove
+    if (pendingOptimisticItems.has(id)) {
+      pendingOptimisticItems.delete(id);
+      const idx = uploadQueue.findIndex(q => q.tempId === id);
+      if (idx !== -1) uploadQueue.splice(idx, 1);
+    }
+
     const removed = communityTexts.find(t => t.id === id);
     communityTexts = communityTexts.filter(t => t.id !== id);
     setCachedTexts(communityTexts);
     renderTexts();
     showToast('Text removed', 'success');
+
+    // If it was only an optimistic item that hadn't reached the server, don't call DELETE API
+    if (id.startsWith('temp_')) {
+      return;
+    }
 
     isWriting = true;
     try {
@@ -176,13 +225,10 @@
       if (res.ok) {
         const data = await res.json();
         if (data && data.texts) {
-          communityTexts = purgeExpired(data.texts);
-          setCachedTexts(communityTexts);
-          renderTexts();
+          mergeServerTexts(data.texts);
         }
       }
     } catch (e) {
-      // Rollback on failure
       if (removed) {
         communityTexts.unshift(removed);
         communityTexts.sort((a, b) => b.createdAt - a.createdAt);
@@ -377,7 +423,7 @@
       return;
     }
 
-    postNewText(content);
+    queueNewText(content);
 
     // Clear input box
     textInput.value = '';
@@ -443,6 +489,11 @@
       const charCount = item.text.length;
       const lines = item.text.split('\n').length;
 
+      const isPending = item.isPending;
+      const pendingBadge = isPending 
+        ? `<span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); font-size: 0.72rem; padding: 0.1rem 0.5rem; margin-left: 0.4rem;">Syncing...</span>` 
+        : '';
+
       return `
         <article class="text-card" data-id="${escapeHtml(item.id)}" data-expires="${item.expiresAt}" data-created="${item.createdAt}">
           <div class="text-card-header">
@@ -452,6 +503,7 @@
                 <polyline points="12 6 12 12 16 14"></polyline>
               </svg>
               <span class="card-time-text">Added ${relativeTime} (${exactTime})</span>
+              ${pendingBadge}
             </div>
             <span class="card-expiry-badge ${statusClass}" title="Auto-deletes for everyone in 24 hours">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">

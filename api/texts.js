@@ -206,8 +206,8 @@ module.exports = async (req, res) => {
 
       const { texts: currentList } = await loadCommunityTexts();
 
-      // Duplicate detection (within 10 seconds)
-      const isDuplicate = currentList.some(item => item.text === newItem.text && (now - item.createdAt) < 10000);
+      // Duplicate detection (within 1.5 seconds to catch double-clicks)
+      const isDuplicate = currentList.some(item => item.text === newItem.text && (now - item.createdAt) < 1500);
       if (isDuplicate) {
         res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: 'Duplicate text detected', duplicate: true, texts: currentList }));

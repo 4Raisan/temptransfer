@@ -67,7 +67,7 @@ async function loadCommunityTexts() {
       try {
         const { blobs } = await listBlob({ prefix: FEED_PREFIX, limit: 6 });
         if (blobs && blobs.length > 0) {
-          blobs.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+          blobs.sort((a, b) => b.pathname.localeCompare(a.pathname));
           const latest = blobs[0];
           const res = await fetch(latest.url, { cache: 'no-store' });
           if (res.ok) {
@@ -116,8 +116,9 @@ async function saveCommunityTexts(newList) {
 
   if (putBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      // Write new unique version file (guaranteed zero CDN cache lag)
-      const versionFile = `${FEED_PREFIX}${Date.now()}_${crypto.randomBytes(3).toString('hex')}.json`;
+      // Write new unique version file (guaranteed zero CDN cache lag, millisecond precision)
+      const paddedTime = String(Date.now()).padStart(16, '0');
+      const versionFile = `${FEED_PREFIX}${paddedTime}_${crypto.randomBytes(3).toString('hex')}.json`;
       await putBlob(versionFile, JSON.stringify(valid), {
         access: 'public',
         addRandomSuffix: false
@@ -135,7 +136,7 @@ async function saveCommunityTexts(newList) {
       if (delBlob && listBlob) {
         listBlob({ prefix: FEED_PREFIX, limit: 15 }).then(({ blobs }) => {
           if (blobs && blobs.length > 3) {
-            blobs.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+            blobs.sort((a, b) => b.pathname.localeCompare(a.pathname));
             const stale = blobs.slice(3);
             delBlob(stale.map(b => b.url)).catch(() => {});
           }

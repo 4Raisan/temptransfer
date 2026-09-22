@@ -16,5 +16,8 @@
     "auto-expire"
   ],
   "author": "4Raisan",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@vercel/blob": "^2.8.0"
+  }
 }

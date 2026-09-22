@@ -184,6 +184,39 @@ body.light-theme .brand-title {
   font-weight: 500;
 }
 
+/* Community Live Badge */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.community-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius-full);
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--success-color);
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--success-color);
+  box-shadow: 0 0 6px var(--success-color);
+  animation: pulse 2s infinite;
+}
+
+.live-text {
+  letter-spacing: -0.01em;
+}
+
 /* Theme Toggle Button */
 .icon-btn {
   background: var(--bg-input);

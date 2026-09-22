@@ -1,15 +1,16 @@
 /**
- * Temp-Transfer - Main Application Logic
- * Clean, lightweight, zero-bloat temporary text transfer with 24-hour auto-clear
+ * Temp-Transfer - Community Synchronized Text Transfer
+ * Real-time community shared clipboard with 24-hour auto-clear
  */
 
 (function () {
   'use strict';
 
   // --- Constants & Config ---
-  const STORAGE_KEY = 'temptransfer_texts_v1';
+  const STORAGE_KEY = 'temptransfer_community_cache';
   const THEME_KEY = 'temptransfer_theme';
-  const EXPIRATION_MS = 24 * 60 * 60 * 1000; // Exactly 24 hours in milliseconds
+  const EXPIRATION_MS = 24 * 60 * 60 * 1000; // Exactly 24 hours
+  const POLL_INTERVAL = 3000; // Poll community updates every 3 seconds
 
   // --- DOM Elements ---
   const textInput = document.getElementById('textInput');
@@ -30,74 +31,132 @@
   const closeModalBtn = document.getElementById('closeModalBtn');
 
   let currentSearchQuery = '';
+  let communityTexts = [];
+  let isFetching = false;
 
-  // --- Storage & Expiration Logic ---
-
-  /**
-   * Get all texts from localStorage and automatically purge expired ones (> 24h old)
-   */
-  function getTexts() {
+  // --- Local Cache Helpers ---
+  function getCachedTexts() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return [];
       const list = JSON.parse(raw);
-      if (!Array.isArray(list)) return [];
-
-      const now = Date.now();
-      const valid = list.filter(item => {
-        // Must have created and expiration timestamp
-        const expiresAt = item.expiresAt || (item.createdAt + EXPIRATION_MS);
-        return expiresAt > now;
-      });
-
-      // If any expired items were filtered out, save back immediately
-      if (valid.length !== list.length) {
-        saveTextsToStorage(valid);
-      }
-
-      return valid;
+      return Array.isArray(list) ? purgeExpired(list) : [];
     } catch (e) {
-      console.error('Failed to read texts from storage:', e);
       return [];
     }
   }
 
-  /**
-   * Save array to localStorage
-   */
-  function saveTextsToStorage(texts) {
+  function setCachedTexts(list) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(texts));
-    } catch (e) {
-      console.error('Failed to save texts to storage:', e);
-      showToast('Storage full or error saving text', 'danger');
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+    } catch (e) {}
+  }
+
+  function purgeExpired(list) {
+    const now = Date.now();
+    return list.filter(item => {
+      const expires = item.expiresAt || (item.createdAt + EXPIRATION_MS);
+      return expires > now;
+    });
+  }
+
+  // --- Community API Sync ---
+
+  async function fetchCommunityTexts(silent = true) {
+    if (isFetching) return;
+    isFetching = true;
+    try {
+      const res = await fetch('/api/texts', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.texts)) {
+          const freshTexts = purgeExpired(data.texts);
+          
+          // Check if data actually changed before re-rendering
+          const hasChanged = JSON.stringify(freshTexts) !== JSON.stringify(communityTexts);
+          if (hasChanged) {
+            communityTexts = freshTexts;
+            setCachedTexts(freshTexts);
+            renderTexts();
+          }
+        }
+      }
+    } catch (err) {
+      if (!silent) console.warn('Could not reach community server:', err.message);
+    } finally {
+      isFetching = false;
     }
   }
 
-  /**
-   * Active sweeper that runs periodically to delete texts older than 24 hours
-   */
-  function purgeExpiredTexts() {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    try {
-      const list = JSON.parse(raw);
-      if (!Array.isArray(list) || list.length === 0) return;
+  async function postNewText(content) {
+    const now = Date.now();
+    const tempId = 'temp_' + now;
+    const optimisticItem = {
+      id: tempId,
+      text: content,
+      createdAt: now,
+      expiresAt: now + EXPIRATION_MS
+    };
 
-      const now = Date.now();
-      const valid = list.filter(item => {
-        const expiresAt = item.expiresAt || (item.createdAt + EXPIRATION_MS);
-        return expiresAt > now;
+    // Optimistic UI update
+    communityTexts.unshift(optimisticItem);
+    renderTexts();
+    showToast('Adding to community...', 'success');
+
+    try {
+      const res = await fetch('/api/texts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: content })
       });
 
-      const expiredCount = list.length - valid.length;
-      if (expiredCount > 0) {
-        saveTextsToStorage(valid);
-        renderTexts();
-        showToast(`${expiredCount} text${expiredCount > 1 ? 's' : ''} auto-cleared (24h reached)`, 'danger');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.texts) {
+          communityTexts = purgeExpired(data.texts);
+          setCachedTexts(communityTexts);
+          renderTexts();
+          showToast('Added! Visible to everyone across devices', 'success');
+          return;
+        }
       }
+      throw new Error('Server returned error');
     } catch (e) {
-      console.error('Error during auto-purge:', e);
+      // Keep optimistic item in local cache even if server momentarily hiccups
+      setCachedTexts(communityTexts);
+      showToast('Saved locally, will sync when reconnected', 'warning');
+    }
+  }
+
+  async function deleteTextItem(id) {
+    // Optimistic remove
+    communityTexts = communityTexts.filter(t => t.id !== id);
+    setCachedTexts(communityTexts);
+    renderTexts();
+    showToast('Text removed', 'success');
+
+    try {
+      await fetch(`/api/texts?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      fetchCommunityTexts(true);
+    } catch (e) {
+      console.error('Delete sync failed:', e);
+    }
+  }
+
+  async function clearAllTexts() {
+    if (communityTexts.length === 0) return;
+    if (!confirm(`Are you sure you want to clear all ${communityTexts.length} community text snippet(s)?`)) return;
+
+    communityTexts = [];
+    setCachedTexts([]);
+    renderTexts();
+    showToast('All community texts cleared', 'success');
+
+    try {
+      await fetch('/api/texts', { method: 'DELETE' });
+      fetchCommunityTexts(true);
+    } catch (e) {
+      console.error('Clear all sync failed:', e);
     }
   }
 
@@ -111,7 +170,6 @@
 
   function linkify(str) {
     const escaped = escapeHtml(str);
-    // Convert http/https links to clickable tags safely
     const urlPattern = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
     return escaped.replace(urlPattern, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
   }
@@ -124,11 +182,11 @@
     const seconds = totalSecs % 60;
 
     if (hours > 0) {
-      return `${hours}h ${minutes}m remaining`;
+      return `${hours}h ${minutes}m left`;
     } else if (minutes > 0) {
-      return `${minutes}m ${seconds}s remaining`;
+      return `${minutes}m ${seconds}s left`;
     } else {
-      return `${seconds}s remaining`;
+      return `${seconds}s left`;
     }
   }
 
@@ -222,7 +280,7 @@
     document.body.removeChild(textArea);
   }
 
-  // --- Add Text Action ---
+  // --- Add Text Button ---
   function handleAddText() {
     const raw = textInput.value;
     const content = raw.trim();
@@ -233,28 +291,15 @@
       return;
     }
 
-    const now = Date.now();
-    const newItem = {
-      id: 'tt_' + now.toString(36) + Math.random().toString(36).substr(2, 6),
-      text: content,
-      createdAt: now,
-      expiresAt: now + EXPIRATION_MS
-    };
+    postNewText(content);
 
-    const list = getTexts();
-    list.unshift(newItem);
-    saveTextsToStorage(list);
-
-    // Clear input box after adding
+    // Clear input box
     textInput.value = '';
     updateInputStats();
-
-    renderTexts();
-    showToast('Text added! Auto-clears in 24 hours', 'success');
     textInput.focus();
   }
 
-  // --- Clear Text Input Box Action ---
+  // --- Clear Input Box Button ---
   function handleClearInput() {
     if (!textInput.value) return;
     textInput.value = '';
@@ -263,28 +308,7 @@
     textInput.focus();
   }
 
-  // --- Delete Single Text Card ---
-  function deleteTextItem(id) {
-    const list = getTexts();
-    const filtered = list.filter(item => item.id !== id);
-    saveTextsToStorage(filtered);
-    renderTexts();
-    showToast('Text removed', 'success');
-  }
-
-  // --- Clear All Texts ---
-  function handleClearAll() {
-    const list = getTexts();
-    if (list.length === 0) return;
-
-    if (confirm(`Are you sure you want to clear all ${list.length} text snippet(s)?`)) {
-      saveTextsToStorage([]);
-      renderTexts();
-      showToast('All texts cleared', 'success');
-    }
-  }
-
-  // --- Update Input Box Statistics ---
+  // --- Update Statistics ---
   function updateInputStats() {
     const val = textInput.value;
     const charCount = val.length;
@@ -294,8 +318,8 @@
 
   // --- Render Text Cards ---
   function renderTexts() {
-    const texts = getTexts();
-    const totalCount = texts.length;
+    const valid = purgeExpired(communityTexts);
+    const totalCount = valid.length;
     textCountBadge.textContent = totalCount;
 
     if (totalCount === 0) {
@@ -308,11 +332,10 @@
     emptyState.style.display = 'none';
     sectionActions.style.display = 'flex';
 
-    // Apply search filter if active
-    let filtered = texts;
+    let filtered = valid;
     if (currentSearchQuery) {
       const q = currentSearchQuery.toLowerCase();
-      filtered = texts.filter(item => item.text.toLowerCase().includes(q));
+      filtered = valid.filter(item => item.text.toLowerCase().includes(q));
     }
 
     if (filtered.length === 0) {
@@ -344,7 +367,7 @@
               </svg>
               <span>Added ${relativeTime} (${exactTime})</span>
             </div>
-            <span class="card-expiry-badge ${statusClass}" title="Will automatically delete when countdown reaches zero">
+            <span class="card-expiry-badge ${statusClass}" title="Auto-deletes for everyone in 24 hours">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="12" y1="6" x2="12" y2="12"></line>
@@ -365,7 +388,7 @@
             <div class="card-actions">
               <!-- Direct Copy Button -->
               <button class="btn-copy" data-action="copy" title="Copy text directly to clipboard">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                 </svg>
@@ -420,7 +443,8 @@
     });
 
     if (hasExpired) {
-      purgeExpiredTexts();
+      communityTexts = purgeExpired(communityTexts);
+      renderTexts();
     }
   }
 
@@ -442,7 +466,6 @@
         qrModal.classList.add('show');
         qrModal.setAttribute('aria-hidden', 'false');
       } catch (e) {
-        console.error('QR code generation error:', e);
         showToast('Text too large for QR code', 'danger');
       }
     } else {
@@ -455,7 +478,7 @@
     qrModal.setAttribute('aria-hidden', 'true');
   }
 
-  // --- Card Event Delegation (Copy, QR, Delete) ---
+  // --- Event Delegation ---
   textList.addEventListener('click', (e) => {
     const target = e.target.closest('button');
     if (!target) return;
@@ -465,8 +488,7 @@
     if (!card) return;
 
     const id = card.getAttribute('data-id');
-    const texts = getTexts();
-    const item = texts.find(t => t.id === id);
+    const item = communityTexts.find(t => t.id === id);
     if (!item) return;
 
     if (action === 'copy') {
@@ -482,7 +504,6 @@
   textInput.addEventListener('input', updateInputStats);
 
   textInput.addEventListener('keydown', (e) => {
-    // Ctrl + Enter or Cmd + Enter to add text
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
       handleAddText();
@@ -492,7 +513,6 @@
   addBtn.addEventListener('click', handleAddText);
   clearInputBtn.addEventListener('click', handleClearInput);
 
-  // Paste action
   if (pasteBtn) {
     pasteBtn.addEventListener('click', async () => {
       try {
@@ -507,7 +527,7 @@
             showToast('Clipboard is empty', 'danger');
           }
         } else {
-          showToast('Clipboard read not supported in this browser', 'danger');
+          showToast('Clipboard read not supported', 'danger');
         }
       } catch (err) {
         showToast('Please press Ctrl+V to paste', 'danger');
@@ -515,15 +535,13 @@
     });
   }
 
-  // Search input
   searchInput.addEventListener('input', (e) => {
     currentSearchQuery = e.target.value.trim();
     renderTexts();
   });
 
-  clearAllBtn.addEventListener('click', handleClearAll);
+  clearAllBtn.addEventListener('click', clearAllTexts);
 
-  // Modal events
   closeModalBtn.addEventListener('click', closeQrModal);
   qrModal.addEventListener('click', (e) => {
     if (e.target === qrModal) closeQrModal();
@@ -553,43 +571,25 @@
     localStorage.setItem(THEME_KEY, isLight ? 'light' : 'dark');
   });
 
-  // --- Check URL Hash for shared text ---
-  function checkUrlHash() {
-    try {
-      const hash = window.location.hash;
-      if (hash && hash.startsWith('#text=')) {
-        const decoded = decodeURIComponent(hash.substring(6));
-        if (decoded) {
-          textInput.value = decoded;
-          updateInputStats();
-          // Clean hash from address bar
-          history.replaceState(null, '', window.location.pathname);
-          showToast('Loaded shared text into input', 'success');
-        }
-      }
-    } catch (e) {
-      console.error('Error reading hash:', e);
-    }
-  }
-
-  // --- Lifecycle & Timers ---
+  // --- Init ---
   initTheme();
-  purgeExpiredTexts();
+  communityTexts = getCachedTexts();
   renderTexts();
   updateInputStats();
-  checkUrlHash();
 
-  // Update countdown display every second
+  // Initial fetch from community backend
+  fetchCommunityTexts(false);
+
+  // Real-time polling: Every 3 seconds check for updates from other users/devices
+  setInterval(() => fetchCommunityTexts(true), POLL_INTERVAL);
+
+  // Update live countdown timers every second
   setInterval(updateCountdowns, 1000);
 
-  // Check and purge expired texts every 15 seconds
-  setInterval(purgeExpiredTexts, 15000);
-
-  // When tab becomes visible again, check for expired texts
+  // Refresh immediately when returning to the tab
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      purgeExpiredTexts();
-      renderTexts();
+      fetchCommunityTexts(true);
     }
   });
 

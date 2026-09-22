@@ -1,0 +1,20 @@
+{
+  "name": "temptransfer",
+  "version": "1.0.0",
+  "description": "Minimalist temporary text transfer web app with 24-hour auto-clear and direct copy buttons",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build": "echo \"Built successfully\""
+  },
+  "keywords": [
+    "temp-transfer",
+    "text-transfer",
+    "clipboard",
+    "temporary-notes",
+    "auto-expire"
+  ],
+  "author": "4Raisan",
+  "license": "MIT"
+}

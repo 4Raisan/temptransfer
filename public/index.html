@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+  <title>Temp-Transfer | Fast Temporary Text Transfer &amp; 24h Auto-Clear</title>
+  <meta name="description" content="Quickly save and transfer text snippets between devices. One-click copy, and texts automatically clear after 24 hours.">
+  <meta name="theme-color" content="#0f172a">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark-theme">
+  <div class="app-layout">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-container">
+        <div class="brand">
+          <div class="logo-wrapper">
+            <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+              <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+              <circle cx="12" cy="14" r="4"></circle>
+              <polyline points="12 12 12 14 14 15"></polyline>
+            </svg>
+            <span class="logo-pulse"></span>
+          </div>
+          <div>
+            <h1 class="brand-title">Temp-Transfer</h1>
+            <p class="brand-subtitle">Quick text transfer &bull; Auto-clears in 24 hours</p>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <button id="themeToggle" class="icon-btn" title="Toggle Dark/Light Mode" aria-label="Toggle theme">
+            <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="5"></circle>
+              <line x1="12" y1="1" x2="12" y2="3"></line>
+              <line x1="12" y1="21" x2="12" y2="23"></line>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+              <line x1="1" y1="12" x2="3" y2="12"></line>
+              <line x1="21" y1="12" x2="23" y2="12"></line>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+            </svg>
+            <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <div class="content-container">
+        
+        <!-- Input Section -->
+        <section class="card input-card">
+          <div class="input-card-header">
+            <label for="textInput" class="input-label">
+              <span class="label-dot"></span>
+              Add New Text Snippet
+            </label>
+            <div class="text-stats" id="textStats">0 characters &bull; 0 lines</div>
+          </div>
+
+          <div class="textarea-wrapper">
+            <textarea 
+              id="textInput" 
+              placeholder="Paste or type text, code snippets, notes, or links here...&#10;Press Ctrl + Enter to quickly add."
+              rows="5"
+              spellcheck="false"
+              autofocus
+            ></textarea>
+          </div>
+
+          <div class="input-card-footer">
+            <div class="keyboard-tip">
+              <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to add text
+            </div>
+
+            <div class="btn-group">
+              <button id="clearInputBtn" class="btn btn-secondary" title="Clear the input text box">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+                Clear Box
+              </button>
+
+              <button id="pasteBtn" class="btn btn-secondary mobile-hide" title="Paste from clipboard">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+                  <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+                </svg>
+                Paste
+              </button>
+
+              <button id="addBtn" class="btn btn-primary" title="Add text to temporary list">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                Add Text
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Texts List Section -->
+        <section class="texts-section">
+          <div class="section-header">
+            <div class="section-title-wrap">
+              <h2 class="section-title">Active Texts</h2>
+              <span id="textCountBadge" class="badge">0</span>
+            </div>
+
+            <div class="section-actions" id="sectionActions" style="display: none;">
+              <div class="search-box">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input type="text" id="searchInput" placeholder="Filter texts..." aria-label="Filter texts">
+              </div>
+              <button id="clearAllBtn" class="btn-text-danger" title="Delete all active texts">
+                Clear All
+              </button>
+            </div>
+          </div>
+
+          <!-- Empty State -->
+          <div id="emptyState" class="empty-state">
+            <div class="empty-icon-wrap">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+              </svg>
+            </div>
+            <h3>No texts added yet</h3>
+            <p>Type or paste any text above and click <strong>"Add Text"</strong>.<br>Texts remain available and automatically clear 24 hours after being added.</p>
+          </div>
+
+          <!-- Text Cards Container -->
+          <div id="textList" class="text-grid"></div>
+        </section>
+
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <div class="footer-container">
+        <p class="footer-text">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="inline-clock">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          Texts automatically self-destruct 24 hours after creation. Clean, secure &amp; zero bloat.
+        </p>
+      </div>
+    </footer>
+  </div>
+
+  <!-- QR Code Modal (for scanning directly to phone) -->
+  <div id="qrModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Scan to Transfer to Phone</h3>
+        <button id="closeModalBtn" class="close-btn" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="qrContainer" class="qr-box"></div>
+        <p class="qr-hint">Scan with your smartphone camera to open and copy this text instantly on mobile.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+  <!-- QR Library (lightweight, zero-dep) -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+  <!-- Main Logic -->
+  <script src="app.js"></script>
+</body>
+</html>

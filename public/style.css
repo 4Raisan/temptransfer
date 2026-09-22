@@ -54,7 +54,7 @@ body.light-theme {
 
   --text-primary: #0f172a;
   --text-secondary: #475569;
-  --text-muted: #94a3b8;
+  --text-muted: #64748b;
 
   --accent-primary: #2563eb;
   --accent-hover: #1d4ed8;
@@ -704,7 +704,7 @@ kbd {
   font-family: var(--font-mono);
   font-size: 0.92rem;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.6;
   color: var(--text-primary);
   max-height: 350px;
@@ -813,6 +813,7 @@ kbd {
   border-radius: var(--radius-md);
   display: inline-block;
   margin: 0 auto 1rem;
+  max-width: 100%;
 }
 
 .qr-hint {

@@ -78,7 +78,7 @@
               placeholder="Paste or type text, code snippets, notes, or links here...&#10;Press Ctrl + Enter to quickly add."
               rows="5"
               spellcheck="false"
-              autofocus
+              maxlength="10000"
             ></textarea>
           </div>
 
@@ -96,7 +96,7 @@
                 Clear Box
               </button>
 
-              <button id="pasteBtn" class="btn btn-secondary mobile-hide" title="Paste from clipboard">
+              <button id="pasteBtn" class="btn btn-secondary" title="Paste from clipboard">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
                   <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
@@ -131,7 +131,7 @@
                 </svg>
                 <input type="text" id="searchInput" placeholder="Filter texts..." aria-label="Filter texts">
               </div>
-              <button id="clearAllBtn" class="btn-text-danger" title="Delete all active texts">
+              <button id="clearAllBtn" class="btn-text-danger" title="Delete all active texts" aria-label="Clear all community texts">
                 Clear All
               </button>
             </div>
@@ -174,7 +174,7 @@
   </div>
 
   <!-- QR Code Modal (for scanning directly to phone) -->
-  <div id="qrModal" class="modal-backdrop" aria-hidden="true">
+  <div id="qrModal" class="modal-backdrop" aria-hidden="true" role="dialog" aria-modal="true" aria-label="QR Code Transfer">
     <div class="modal-card">
       <div class="modal-header">
         <h3>Scan to Transfer to Phone</h3>
@@ -191,7 +191,7 @@
   <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
   <!-- QR Library (lightweight, zero-dep) -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" integrity="sha256-xUHvBjJ4hahBW8qN9gceFBibSFUzbe9PNttUvehITzY=" crossorigin="anonymous"></script>
   <!-- Main Logic -->
   <script src="script.js"></script>
 </body>

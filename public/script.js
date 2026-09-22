@@ -10,7 +10,7 @@
   const STORAGE_KEY = 'temptransfer_community_cache';
   const THEME_KEY = 'temptransfer_theme';
   const EXPIRATION_MS = 24 * 60 * 60 * 1000; // Exactly 24 hours
-  const POLL_INTERVAL = 3000; // Poll community updates every 3 seconds
+  const POLL_INTERVAL = 5000; // Poll community updates every 5 seconds (reduced from 3s to save API quota)
 
   // --- DOM Elements ---
   const textInput = document.getElementById('textInput');
@@ -33,6 +33,9 @@
   let currentSearchQuery = '';
   let communityTexts = [];
   let isFetching = false;
+  let isWriting = false; // Tracks if a POST/DELETE is in flight
+  let pollIntervalId = null;
+  let clockOffset = 0; // serverTime - clientTime offset
 
   // --- Local Cache Helpers ---
   function getCachedTexts() {
@@ -53,7 +56,7 @@
   }
 
   function purgeExpired(list) {
-    const now = Date.now();
+    const now = Date.now() + clockOffset;
     return list.filter(item => {
       const expires = item.expiresAt || (item.createdAt + EXPIRATION_MS);
       return expires > now;
@@ -63,7 +66,7 @@
   // --- Community API Sync ---
 
   async function fetchCommunityTexts(silent = true) {
-    if (isFetching) return;
+    if (isFetching || isWriting) return; // Don't poll while a write is in flight
     isFetching = true;
     try {
       const res = await fetch(`/api/texts?_t=${Date.now()}`, {
@@ -73,8 +76,13 @@
       if (res.ok) {
         const data = await res.json();
         if (data && Array.isArray(data.texts)) {
+          // Sync clock offset
+          if (data.serverTime) {
+            clockOffset = data.serverTime - Date.now();
+          }
+
           const freshTexts = purgeExpired(data.texts);
-          
+
           // Check if data actually changed before re-rendering
           const hasChanged = JSON.stringify(freshTexts) !== JSON.stringify(communityTexts);
           if (hasChanged) {
@@ -106,6 +114,7 @@
     renderTexts();
     showToast('Adding to community...', 'success');
 
+    isWriting = true; // Pause polling while writing
     try {
       const res = await fetch('/api/texts', {
         method: 'POST',
@@ -123,58 +132,109 @@
           return;
         }
       }
+
+      if (res.status === 409) {
+        const data = await res.json();
+        showToast('Duplicate text — already exists', 'warning');
+        if (data.texts) {
+          communityTexts = purgeExpired(data.texts);
+          setCachedTexts(communityTexts);
+          renderTexts();
+        }
+        return;
+      }
+
+      if (res.status === 413) {
+        showToast('Text too large to save', 'danger');
+        // Remove optimistic item
+        communityTexts = communityTexts.filter(t => t.id !== tempId);
+        renderTexts();
+        return;
+      }
+
       throw new Error('Server returned error');
     } catch (e) {
       // Keep optimistic item in local cache even if server momentarily hiccups
       setCachedTexts(communityTexts);
       showToast('Saved locally, will sync when reconnected', 'warning');
+    } finally {
+      isWriting = false;
     }
   }
 
   async function deleteTextItem(id) {
     // Optimistic remove
+    const removed = communityTexts.find(t => t.id === id);
     communityTexts = communityTexts.filter(t => t.id !== id);
     setCachedTexts(communityTexts);
     renderTexts();
     showToast('Text removed', 'success');
 
+    isWriting = true;
     try {
-      await fetch(`/api/texts?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
-      fetchCommunityTexts(true);
+      const res = await fetch(`/api/texts?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.texts) {
+          communityTexts = purgeExpired(data.texts);
+          setCachedTexts(communityTexts);
+          renderTexts();
+        }
+      }
     } catch (e) {
-      console.error('Delete sync failed:', e);
+      // Rollback on failure
+      if (removed) {
+        communityTexts.unshift(removed);
+        communityTexts.sort((a, b) => b.createdAt - a.createdAt);
+        setCachedTexts(communityTexts);
+        renderTexts();
+        showToast('Delete failed — restored text', 'danger');
+      }
+    } finally {
+      isWriting = false;
     }
   }
 
   async function clearAllTexts() {
     if (communityTexts.length === 0) return;
-    if (!confirm(`Are you sure you want to clear all ${communityTexts.length} community text snippet(s)?`)) return;
+    if (!confirm(`Are you sure you want to clear all ${communityTexts.length} community text snippet(s)?\n\nThis will delete them one by one.`)) return;
 
-    communityTexts = [];
-    setCachedTexts([]);
-    renderTexts();
-    showToast('All community texts cleared', 'success');
+    showToast('Clearing texts...', 'success');
+    const idsToDelete = communityTexts.map(t => t.id);
 
-    try {
-      await fetch('/api/texts', { method: 'DELETE' });
-      fetchCommunityTexts(true);
-    } catch (e) {
-      console.error('Clear all sync failed:', e);
+    // Delete each item individually (no bulk wipe endpoint)
+    for (const id of idsToDelete) {
+      try {
+        await fetch(`/api/texts?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      } catch (e) {}
     }
+
+    // Refresh from server
+    await fetchCommunityTexts(true);
+    showToast('All community texts cleared', 'success');
   }
 
   // --- UI Helpers ---
 
   function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    // Escape all HTML-significant characters including quotes
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   }
 
   function linkify(str) {
     const escaped = escapeHtml(str);
-    const urlPattern = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
-    return escaped.replace(urlPattern, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+    // Match URLs but exclude trailing punctuation and quotes
+    const urlPattern = /(https?:\/\/[^\s<>&"']+)/g;
+    return escaped.replace(urlPattern, function(url) {
+      // Sanitize: only allow http/https URLs
+      if (!/^https?:\/\//i.test(url)) return url;
+      return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a>';
+    });
   }
 
   function formatTimeRemaining(ms) {
@@ -202,7 +262,7 @@
   }
 
   function formatRelativeTime(timestamp) {
-    const diff = Date.now() - timestamp;
+    const diff = (Date.now() + clockOffset) - timestamp;
     const sec = Math.floor(diff / 1000);
     if (sec < 45) return 'Just now';
     const min = Math.floor(sec / 60);
@@ -218,6 +278,8 @@
     let iconSvg = '';
     if (type === 'success') {
       iconSvg = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--success-color)"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+    } else if (type === 'warning') {
+      iconSvg = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--warning-color)"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`;
     } else {
       iconSvg = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--danger-color)"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>`;
     }
@@ -268,12 +330,28 @@
   function fallbackCopy(text, onSuccess) {
     const textArea = document.createElement('textarea');
     textArea.value = text;
+    textArea.setAttribute('readonly', '');
     textArea.style.position = 'fixed';
     textArea.style.left = '-9999px';
     textArea.style.top = '0';
+    textArea.style.opacity = '0';
     document.body.appendChild(textArea);
-    textArea.focus();
-    textArea.select();
+
+    // iOS Safari requires specific selection approach
+    if (navigator.userAgent.match(/ipad|ipod|iphone/i)) {
+      textArea.contentEditable = true;
+      textArea.readOnly = false;
+      const range = document.createRange();
+      range.selectNodeContents(textArea);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      textArea.setSelectionRange(0, 999999);
+    } else {
+      textArea.focus();
+      textArea.select();
+    }
+
     try {
       document.execCommand('copy');
       onSuccess();
@@ -291,6 +369,11 @@
     if (!content) {
       showToast('Please type or paste some text first', 'danger');
       textInput.focus();
+      return;
+    }
+
+    if (content.length > 10000) {
+      showToast('Text too long (max 10,000 characters)', 'danger');
       return;
     }
 
@@ -350,7 +433,7 @@
       return;
     }
 
-    const now = Date.now();
+    const now = Date.now() + clockOffset;
     textList.innerHTML = filtered.map(item => {
       const remainingMs = Math.max(0, item.expiresAt - now);
       const expiryText = formatTimeRemaining(remainingMs);
@@ -361,14 +444,14 @@
       const lines = item.text.split('\n').length;
 
       return `
-        <article class="text-card" data-id="${item.id}" data-expires="${item.expiresAt}">
+        <article class="text-card" data-id="${escapeHtml(item.id)}" data-expires="${item.expiresAt}" data-created="${item.createdAt}">
           <div class="text-card-header">
             <div class="card-time" title="${new Date(item.createdAt).toLocaleString()}">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10"></circle>
                 <polyline points="12 6 12 12 16 14"></polyline>
               </svg>
-              <span>Added ${relativeTime} (${exactTime})</span>
+              <span class="card-time-text">Added ${relativeTime} (${exactTime})</span>
             </div>
             <span class="card-expiry-badge ${statusClass}" title="Auto-deletes for everyone in 24 hours">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -390,7 +473,7 @@
 
             <div class="card-actions">
               <!-- Direct Copy Button -->
-              <button class="btn-copy" data-action="copy" title="Copy text directly to clipboard">
+              <button class="btn-copy" data-action="copy" title="Copy text directly to clipboard" aria-label="Copy this text snippet to clipboard">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -399,7 +482,7 @@
               </button>
 
               <!-- QR Code Transfer Button -->
-              <button class="btn-card-action" data-action="qr" title="Scan to open on phone">
+              <button class="btn-card-action" data-action="qr" title="Scan to open on phone" aria-label="Generate QR code for this text">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <rect x="3" y="3" width="7" height="7"></rect>
                   <rect x="14" y="3" width="7" height="7"></rect>
@@ -410,7 +493,7 @@
               </button>
 
               <!-- Delete Single Button -->
-              <button class="btn-card-action btn-card-danger" data-action="delete" title="Delete this text now">
+              <button class="btn-card-action btn-card-danger" data-action="delete" title="Delete this text now" aria-label="Delete this text snippet">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="3 6 5 6 21 6"></polyline>
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -423,14 +506,15 @@
     }).join('');
   }
 
-  // --- Real-Time Countdown Update ---
+  // --- Real-Time Countdown & Relative Time Update ---
   function updateCountdowns() {
     const cards = textList.querySelectorAll('.text-card');
-    const now = Date.now();
+    const now = Date.now() + clockOffset;
     let hasExpired = false;
 
     cards.forEach(card => {
       const expiresAt = parseInt(card.getAttribute('data-expires'), 10);
+      const createdAt = parseInt(card.getAttribute('data-created'), 10);
       const remainingMs = expiresAt - now;
 
       if (remainingMs <= 0) {
@@ -441,6 +525,13 @@
         if (badge && textSpan) {
           textSpan.textContent = formatTimeRemaining(remainingMs);
           badge.className = `card-expiry-badge ${getExpiryStatusClass(remainingMs)}`;
+        }
+
+        // Update relative time ("Added X ago")
+        const timeText = card.querySelector('.card-time-text');
+        if (timeText && createdAt) {
+          const exactTime = new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          timeText.textContent = `Added ${formatRelativeTime(createdAt)} (${exactTime})`;
         }
       }
     });
@@ -458,18 +549,23 @@
 
     if (typeof QRCode !== 'undefined') {
       try {
+        // Encode to handle multi-byte UTF-8 characters
+        const safeText = text.length > 2000 ? text.slice(0, 2000) : text;
         new QRCode(qrContainer, {
-          text: text,
+          text: safeText,
           width: 200,
           height: 200,
           colorDark: '#0f172a',
           colorLight: '#ffffff',
-          correctLevel: QRCode.CorrectLevel.M
+          correctLevel: QRCode.CorrectLevel.L
         });
         qrModal.classList.add('show');
         qrModal.setAttribute('aria-hidden', 'false');
+
+        // Trap focus in modal
+        closeModalBtn.focus();
       } catch (e) {
-        showToast('Text too large for QR code', 'danger');
+        showToast('Text too large or complex for QR code', 'danger');
       }
     } else {
       showToast('QR code library not loaded', 'danger');
@@ -574,6 +670,19 @@
     localStorage.setItem(THEME_KEY, isLight ? 'light' : 'dark');
   });
 
+  // --- Polling Control (pause when tab hidden) ---
+  function startPolling() {
+    if (pollIntervalId) return;
+    pollIntervalId = setInterval(() => fetchCommunityTexts(true), POLL_INTERVAL);
+  }
+
+  function stopPolling() {
+    if (pollIntervalId) {
+      clearInterval(pollIntervalId);
+      pollIntervalId = null;
+    }
+  }
+
   // --- Init ---
   initTheme();
   communityTexts = getCachedTexts();
@@ -583,16 +692,19 @@
   // Initial fetch from community backend
   fetchCommunityTexts(false);
 
-  // Real-time polling: Every 3 seconds check for updates from other users/devices
-  setInterval(() => fetchCommunityTexts(true), POLL_INTERVAL);
+  // Start polling
+  startPolling();
 
-  // Update live countdown timers every second
+  // Update live countdown timers every second (also updates "Added X ago")
   setInterval(updateCountdowns, 1000);
 
-  // Refresh immediately when returning to the tab
+  // Pause polling when tab is hidden, resume when visible
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       fetchCommunityTexts(true);
+      startPolling();
+    } else {
+      stopPolling();
     }
   });
 

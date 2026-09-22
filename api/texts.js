@@ -1,6 +1,7 @@
 // Vercel Serverless Function: /api/texts
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // Load .env.local for local testing if present
 if (fs.existsSync(path.join(process.cwd(), '.env.local'))) {
@@ -29,6 +30,9 @@ try {
 
 const BLOB_FILENAME = 'community_texts.json';
 const EXPIRATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_BODY_SIZE = 64 * 1024; // 64KB max request body
+const MAX_TEXT_LENGTH = 10000; // 10,000 chars max per text
+const MAX_TEXTS = 200; // Max texts in community board
 
 let memoryTexts = [];
 
@@ -43,7 +47,7 @@ function purgeExpired(list) {
 async function loadCommunityTexts() {
   if (listBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      const { blobs } = await listBlob();
+      const { blobs } = await listBlob({ prefix: BLOB_FILENAME, limit: 1 });
       const targetBlob = blobs.find(b => b.pathname === BLOB_FILENAME);
       if (targetBlob) {
         const fetchUrl = (targetBlob.downloadUrl || targetBlob.url) + '?_t=' + Date.now();
@@ -56,7 +60,7 @@ async function loadCommunityTexts() {
           if (Array.isArray(remoteList)) {
             const valid = purgeExpired(remoteList);
             memoryTexts = valid;
-            return valid;
+            return { texts: valid, hadExpired: valid.length < remoteList.length };
           }
         }
       }
@@ -65,10 +69,9 @@ async function loadCommunityTexts() {
     }
   }
 
-  return purgeExpired(memoryTexts);
+  const valid = purgeExpired(memoryTexts);
+  return { texts: valid, hadExpired: false };
 }
-
-let lastBlobError = null;
 
 async function saveCommunityTexts(newList) {
   const valid = purgeExpired(newList);
@@ -76,19 +79,43 @@ async function saveCommunityTexts(newList) {
 
   if (putBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      const b = await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
+      await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
         access: 'public',
         addRandomSuffix: false,
         allowOverwrite: true
       });
-      lastBlobError = null;
     } catch (e) {
-      lastBlobError = e.message;
       console.error('Failed to sync to Vercel Blob:', e.message);
     }
   }
 
   return valid;
+}
+
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let size = 0;
+
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) {
+        req.destroy();
+        reject(new Error('BODY_TOO_LARGE'));
+        return;
+      }
+      body += chunk;
+    });
+
+    req.on('error', err => reject(err));
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(body || '{}'));
+      } catch (e) {
+        reject(new Error('INVALID_JSON'));
+      }
+    });
+  });
 }
 
 module.exports = async (req, res) => {
@@ -106,74 +133,117 @@ module.exports = async (req, res) => {
   // GET: Fetch community texts
   if (req.method === 'GET') {
     try {
-      const texts = await loadCommunityTexts();
+      const { texts, hadExpired } = await loadCommunityTexts();
+
+      // Save back if expired items were purged (cleanup on read)
+      if (hadExpired) {
+        saveCommunityTexts(texts).catch(e => console.error('Background purge save failed:', e.message));
+      }
+
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ texts, serverTime: Date.now() }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: err.message }));
+      res.end(JSON.stringify({ error: 'Failed to load texts' }));
     }
     return;
   }
 
   // POST: Add new community text
   if (req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', async () => {
+    try {
+      let data;
       try {
-        const data = JSON.parse(body || '{}');
-        if (!data || !data.text || typeof data.text !== 'string' || !data.text.trim()) {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'Text content is required' }));
+        data = await parseBody(req);
+      } catch (e) {
+        if (e.message === 'BODY_TOO_LARGE') {
+          res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Request body too large (max 64KB)' }));
           return;
         }
-
-        const now = Date.now();
-        const newItem = {
-          id: 'comm_' + now.toString(36) + Math.random().toString(36).substr(2, 6),
-          text: data.text.trim(),
-          createdAt: now,
-          expiresAt: now + EXPIRATION_MS
-        };
-
-        const currentList = await loadCommunityTexts();
-        const isDuplicate = currentList.some(item => item.text === newItem.text && (now - item.createdAt) < 5000);
-        if (!isDuplicate) {
-          currentList.unshift(newItem);
-        }
-
-        const savedList = await saveCommunityTexts(currentList);
-        res.writeHead(201, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ success: true, item: newItem, texts: savedList, blobError: lastBlobError }));
-      } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
       }
-    });
+
+      if (!data || !data.text || typeof data.text !== 'string' || !data.text.trim()) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Text content is required' }));
+        return;
+      }
+
+      const text = data.text.trim();
+
+      if (text.length > MAX_TEXT_LENGTH) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: `Text too long (max ${MAX_TEXT_LENGTH} characters)` }));
+        return;
+      }
+
+      const now = Date.now();
+      const newItem = {
+        id: 'comm_' + now.toString(36) + crypto.randomBytes(4).toString('hex'),
+        text: text,
+        createdAt: now,
+        expiresAt: now + EXPIRATION_MS
+      };
+
+      const { texts: currentList } = await loadCommunityTexts();
+
+      // Duplicate detection
+      const isDuplicate = currentList.some(item => item.text === newItem.text && (now - item.createdAt) < 5000);
+      if (isDuplicate) {
+        res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Duplicate text detected', duplicate: true, texts: currentList }));
+        return;
+      }
+
+      currentList.unshift(newItem);
+
+      // Enforce max texts limit
+      if (currentList.length > MAX_TEXTS) {
+        currentList.length = MAX_TEXTS;
+      }
+
+      const savedList = await saveCommunityTexts(currentList);
+      res.writeHead(201, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ success: true, item: newItem, texts: savedList }));
+    } catch (e) {
+      console.error('POST error:', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    }
     return;
   }
 
-  // DELETE: Delete single or all
+  // DELETE: Delete single text only (no bulk wipe)
   if (req.method === 'DELETE') {
     try {
       const urlObj = new URL(req.url, 'http://localhost');
       const deleteId = urlObj.searchParams.get('id');
 
-      const currentList = await loadCommunityTexts();
-      let updatedList = [];
-      if (deleteId) {
-        updatedList = currentList.filter(item => item.id !== deleteId);
-      } else {
-        updatedList = [];
+      if (!deleteId) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Item ID is required for deletion' }));
+        return;
+      }
+
+      const { texts: currentList } = await loadCommunityTexts();
+      const updatedList = currentList.filter(item => item.id !== deleteId);
+
+      if (updatedList.length === currentList.length) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'Text not found' }));
+        return;
       }
 
       await saveCommunityTexts(updatedList);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ success: true, texts: updatedList }));
     } catch (err) {
+      console.error('DELETE error:', err.message);
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: err.message }));
+      res.end(JSON.stringify({ error: 'Internal server error' }));
     }
     return;
   }

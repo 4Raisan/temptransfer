@@ -101,7 +101,8 @@ async function saveCommunityTexts(newList) {
       await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
         access: 'public',
         addRandomSuffix: false,
-        allowOverwrite: true
+        allowOverwrite: true,
+        cacheControlMaxAge: 0
       });
       lastEtag = null; // Invalidate cached ETag on write
     } catch (e) {

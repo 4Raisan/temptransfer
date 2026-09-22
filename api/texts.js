@@ -68,18 +68,22 @@ async function loadCommunityTexts() {
   return purgeExpired(memoryTexts);
 }
 
+let lastBlobError = null;
+
 async function saveCommunityTexts(newList) {
   const valid = purgeExpired(newList);
   memoryTexts = valid;
 
   if (putBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
+      const b = await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
         access: 'public',
         addRandomSuffix: false,
         allowOverwrite: true
       });
+      lastBlobError = null;
     } catch (e) {
+      lastBlobError = e.message;
       console.error('Failed to sync to Vercel Blob:', e.message);
     }
   }
@@ -147,7 +151,7 @@ module.exports = async (req, res) => {
 
         const savedList = await saveCommunityTexts(currentList);
         res.writeHead(201, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ success: true, item: newItem, texts: savedList }));
+        res.end(JSON.stringify({ success: true, item: newItem, texts: savedList, blobError: lastBlobError }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: 'Invalid JSON body' }));

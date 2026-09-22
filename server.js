@@ -19,6 +19,12 @@ const MIME_TYPES = {
 };
 
 function handler(req, res) {
+  if (req.url && req.url.includes('debug=1')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ url: req.url, headers: req.headers }));
+    return;
+  }
+
   const originalUrl = req.headers['x-forwarded-uri'] || req.headers['x-matched-path'] || req.url || '/';
   const urlObj = new URL(originalUrl, 'http://localhost');
   const reqUrl = urlObj.pathname;

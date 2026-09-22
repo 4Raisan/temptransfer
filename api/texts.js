@@ -20,17 +20,17 @@ if (fs.existsSync(path.join(process.cwd(), '.env.local'))) {
 }
 
 let putBlob = null;
+let listBlob = null;
 try {
   const blobModule = require('@vercel/blob');
   putBlob = blobModule.put;
+  listBlob = blobModule.list;
 } catch (e) {}
 
 const BLOB_FILENAME = 'community_texts.json';
 const EXPIRATION_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 let memoryTexts = [];
-let lastFetchTime = 0;
-let blobUrl = null;
 
 function purgeExpired(list) {
   const now = Date.now();
@@ -41,18 +41,13 @@ function purgeExpired(list) {
 }
 
 async function loadCommunityTexts() {
-  const now = Date.now();
-  // Fetch fresh from Blob if token is available
-  if (process.env.BLOB_READ_WRITE_TOKEN) {
+  if (listBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      let targetUrl = blobUrl;
-      if (!targetUrl && process.env.BLOB_STORE_ID) {
-        const cleanId = process.env.BLOB_STORE_ID.replace('store_', '').toLowerCase();
-        targetUrl = `https://${cleanId}.public.blob.vercel-storage.com/${BLOB_FILENAME}`;
-      }
-
-      if (targetUrl) {
-        const res = await fetch(`${targetUrl}?_cb=${now}`, {
+      const { blobs } = await listBlob();
+      const targetBlob = blobs.find(b => b.pathname === BLOB_FILENAME);
+      if (targetBlob) {
+        const fetchUrl = (targetBlob.downloadUrl || targetBlob.url) + '?_t=' + Date.now();
+        const res = await fetch(fetchUrl, {
           cache: 'no-store',
           headers: { 'Cache-Control': 'no-cache, no-store' }
         });
@@ -61,35 +56,29 @@ async function loadCommunityTexts() {
           if (Array.isArray(remoteList)) {
             const valid = purgeExpired(remoteList);
             memoryTexts = valid;
-            lastFetchTime = now;
             return valid;
           }
         }
       }
     } catch (e) {
-      console.warn('Blob fetch error:', e.message);
+      console.warn('Blob list error:', e.message);
     }
   }
 
-  memoryTexts = purgeExpired(memoryTexts);
-  lastFetchTime = now;
-  return memoryTexts;
+  return purgeExpired(memoryTexts);
 }
 
 async function saveCommunityTexts(newList) {
   const valid = purgeExpired(newList);
   memoryTexts = valid;
-  lastFetchTime = Date.now();
 
   if (putBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      // Must use allowOverwrite: true to update existing community blob
-      const blob = await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
+      await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
         access: 'public',
         addRandomSuffix: false,
         allowOverwrite: true
       });
-      blobUrl = blob.url;
     } catch (e) {
       console.error('Failed to sync to Vercel Blob:', e.message);
     }

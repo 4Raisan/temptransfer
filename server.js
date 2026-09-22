@@ -37,7 +37,8 @@ function handler(req, res) {
     return;
   }
 
-  let reqUrl = (req.url || '/').split('?')[0];
+  const originalUrl = req.headers['x-forwarded-uri'] || req.headers['x-matched-path'] || req.url || '/';
+  let reqUrl = originalUrl.split('?')[0];
 
   // API endpoints
   if (reqUrl === '/api/texts') {

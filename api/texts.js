@@ -104,7 +104,13 @@ module.exports = async (req, res) => {
     try {
       const texts = await loadCommunityTexts();
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ texts, serverTime: Date.now() }));
+      res.end(JSON.stringify({
+        texts,
+        hasToken: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
+        hasPut: Boolean(putBlob),
+        hasList: Boolean(listBlob),
+        serverTime: Date.now()
+      }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: err.message }));

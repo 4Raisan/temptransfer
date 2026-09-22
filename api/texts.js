@@ -117,8 +117,7 @@ async function saveCommunityTexts(newList) {
   if (putBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
       // Write new unique version file (guaranteed zero CDN cache lag, millisecond precision)
-      const paddedTime = String(Date.now()).padStart(16, '0');
-      const versionFile = `${FEED_PREFIX}${paddedTime}_${crypto.randomBytes(3).toString('hex')}.json`;
+      const versionFile = `${FEED_PREFIX}${Date.now()}_${crypto.randomBytes(3).toString('hex')}.json`;
       await putBlob(versionFile, JSON.stringify(valid), {
         access: 'public',
         addRandomSuffix: false

@@ -42,20 +42,20 @@ function purgeExpired(list) {
 
 async function loadCommunityTexts() {
   const now = Date.now();
-  if (now - lastFetchTime < 1500 && memoryTexts.length > 0) {
-    return memoryTexts;
-  }
-
+  // Fetch fresh from Blob if token is available
   if (process.env.BLOB_READ_WRITE_TOKEN) {
     try {
       let targetUrl = blobUrl;
       if (!targetUrl && process.env.BLOB_STORE_ID) {
         const cleanId = process.env.BLOB_STORE_ID.replace('store_', '').toLowerCase();
-        targetUrl = `https://${cleanId}.public.blob.vercel-storage.com/${BLOB_FILENAME}?t=${now}`;
+        targetUrl = `https://${cleanId}.public.blob.vercel-storage.com/${BLOB_FILENAME}`;
       }
 
       if (targetUrl) {
-        const res = await fetch(targetUrl, { cache: 'no-store' });
+        const res = await fetch(`${targetUrl}?_cb=${now}`, {
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache, no-store' }
+        });
         if (res.ok) {
           const remoteList = await res.json();
           if (Array.isArray(remoteList)) {
@@ -83,9 +83,11 @@ async function saveCommunityTexts(newList) {
 
   if (putBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
+      // Must use allowOverwrite: true to update existing community blob
       const blob = await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
         access: 'public',
-        addRandomSuffix: false
+        addRandomSuffix: false,
+        allowOverwrite: true
       });
       blobUrl = blob.url;
     } catch (e) {

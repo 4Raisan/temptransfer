@@ -66,7 +66,10 @@
     if (isFetching) return;
     isFetching = true;
     try {
-      const res = await fetch('/api/texts', { cache: 'no-store' });
+      const res = await fetch(`/api/texts?_t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' }
+      });
       if (res.ok) {
         const data = await res.json();
         if (data && Array.isArray(data.texts)) {

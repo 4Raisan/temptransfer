@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "build": "echo \"Built successfully\""
+    "build": "echo Built successfully"
   },
   "keywords": [
     "temp-transfer",

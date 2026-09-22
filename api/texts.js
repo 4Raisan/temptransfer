@@ -21,11 +21,11 @@ if (fs.existsSync(path.join(process.cwd(), '.env.local'))) {
 }
 
 let putBlob = null;
-let listBlob = null;
+let getBlob = null;
 try {
   const blobModule = require('@vercel/blob');
   putBlob = blobModule.put;
-  listBlob = blobModule.list;
+  getBlob = blobModule.get;
 } catch (e) {}
 
 const BLOB_FILENAME = 'community_texts.json';
@@ -35,7 +35,7 @@ const MAX_TEXT_LENGTH = 10000; // 10,000 chars max per text
 const MAX_TEXTS = 200; // Max texts in community board
 
 let memoryTexts = [];
-let cachedBlobUrl = null;
+let lastEtag = null;
 
 function purgeExpired(list) {
   const now = Date.now();
@@ -45,30 +45,37 @@ function purgeExpired(list) {
   });
 }
 
-async function loadCommunityTexts() {
-  if (process.env.BLOB_READ_WRITE_TOKEN) {
-    try {
-      let targetUrl = cachedBlobUrl;
+async function streamToString(readableStream) {
+  const reader = readableStream.getReader();
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
 
-      // If URL not cached yet in this container instance, discover it via listBlob
-      if (!targetUrl && listBlob) {
-        const { blobs } = await listBlob({ prefix: BLOB_FILENAME, limit: 1 });
-        const targetBlob = blobs.find(b => b.pathname === BLOB_FILENAME);
-        if (targetBlob) {
-          const rawUrl = targetBlob.url || targetBlob.downloadUrl;
-          cachedBlobUrl = rawUrl ? rawUrl.split('?')[0] : null;
-          targetUrl = cachedBlobUrl;
-        }
+async function loadCommunityTexts() {
+  if (getBlob && process.env.BLOB_READ_WRITE_TOKEN) {
+    try {
+      const options = {
+        access: 'public',
+        headers: { 'Cache-Control': 'no-cache' }
+      };
+      if (lastEtag) {
+        options.ifNoneMatch = lastEtag;
       }
 
-      if (targetUrl) {
-        const cleanUrl = targetUrl.split('?')[0];
-        const res = await fetch(cleanUrl + '?_t=' + Date.now(), {
-          cache: 'no-store',
-          headers: { 'Cache-Control': 'no-cache, no-store' }
-        });
-        if (res.ok) {
-          const remoteList = await res.json();
+      const res = await getBlob(BLOB_FILENAME, options);
+      if (res) {
+        if (res.statusCode === 304) {
+          return { texts: purgeExpired(memoryTexts), hadExpired: false };
+        }
+        if (res.statusCode === 200 && res.stream) {
+          lastEtag = res.blob?.etag || null;
+          const contentStr = await streamToString(res.stream);
+          const remoteList = JSON.parse(contentStr || '[]');
           if (Array.isArray(remoteList)) {
             const valid = purgeExpired(remoteList);
             memoryTexts = valid;
@@ -77,7 +84,7 @@ async function loadCommunityTexts() {
         }
       }
     } catch (e) {
-      console.warn('Blob list/fetch error:', e.message);
+      console.warn('Blob get error:', e.message);
     }
   }
 
@@ -91,14 +98,12 @@ async function saveCommunityTexts(newList) {
 
   if (putBlob && process.env.BLOB_READ_WRITE_TOKEN) {
     try {
-      const b = await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
+      await putBlob(BLOB_FILENAME, JSON.stringify(valid), {
         access: 'public',
         addRandomSuffix: false,
         allowOverwrite: true
       });
-      if (b && (b.url || b.downloadUrl)) {
-        cachedBlobUrl = (b.url || b.downloadUrl).split('?')[0];
-      }
+      lastEtag = null; // Invalidate cached ETag on write
     } catch (e) {
       console.error('Failed to sync to Vercel Blob:', e.message);
     }
